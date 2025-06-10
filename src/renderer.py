@@ -114,7 +114,7 @@ class WaterRenderer:
             scene.mesh(vertices=self.boat.world_vertices, 
                        indices=self.boat.indices, 
                        normals=self.boat.world_normals, 
-                       color=self.boat_color)
+                       color=self.boat_color,per_vertex_color=self.boat.vertex_color)
             # 使用 scene.particles 渲染障碍物
             scene.particles(self.obstacle_manager.obstacles.position, 
                             radius=6.0, 

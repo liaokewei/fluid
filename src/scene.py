@@ -25,10 +25,14 @@ class Boat:
         self.drag = 0.95
         self.bounds = water_bounds
         self.float_height = 10.0
-        self.buoyancy_spring = 600.0 # 使用一个经过验证的稳定值
-        self.buoyancy_damping = 0.95
+        self.visual_height_scale = 15.0
+        self.buoyancy_spring = 400.0 # 使用一个经过验证的稳定值
+        self.buoyancy_damping = 0.9
+        # self.buoyancy_damping = 0.95
         self.bounding_radius = 12.0
         self.wind_influence_factor = 40.0
+
+        self.debug_values = ti.Vector.field(4, dtype=ti.f32, shape=())
         
         # --- 浮力点定义 ---
         self.buoyancy_points = ti.Vector.field(3, dtype=ti.f32, shape=4)
@@ -103,6 +107,8 @@ class Boat:
             texture_image = Image.open("../model/PIC_01.png").convert("RGB")
             texture_data = np.array(texture_image, dtype=np.float32) / 255.0
             tex_h, tex_w = texture_data.shape[:2]
+
+            uvs_np = self.uvs.to_numpy() 
             vertex_color_np = np.zeros((uvs_np.shape[0], 3), dtype=np.float32)
             for i, (u, v) in enumerate(uvs_np):
                 u_ = np.clip(u, 0, 1)
@@ -120,19 +126,36 @@ class Boat:
     @ti.kernel
     def update_world_space_data(self, water_h: ti.template()):
         base_rot_matrix = create_rotation_matrix(self.rotation[None])
+        
+        # --- 1. 计算俯仰角 (Pitch) ---
+        # a. 获取船头和船尾浮力点的世界坐标
         p_front_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[0]
         p_stern_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[1]
-        h_front = water_h[ti.cast(p_front_world.x, ti.i32), ti.cast(p_front_world.z, ti.i32)]
-        h_stern = water_h[ti.cast(p_stern_world.x, ti.i32), ti.cast(p_stern_world.z, ti.i32)]
-        pitch_angle = (h_front - h_stern) * 0.03
+        
+        # b. 获取船头和船尾的水面高度 (乘以视觉缩放系数！)
+        h_front = water_h[ti.cast(p_front_world.x, ti.i32), ti.cast(p_front_world.z, ti.i32)] * self.visual_height_scale
+        h_stern = water_h[ti.cast(p_stern_world.x, ti.i32), ti.cast(p_stern_world.z, ti.i32)] * self.visual_height_scale
+        
+        # c. 根据高度差计算俯仰角
+        pitch_angle = (h_front - h_stern) * 0.03 # 0.03是倾斜灵敏度，可以调整
+
+        # --- 2. 计算侧倾角 (Roll) ---
+        # a. 获取左舷和右舷浮力点的世界坐标
         p_port_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[2]
         p_starboard_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[3]
-        h_port = water_h[ti.cast(p_port_world.x, ti.i32), ti.cast(p_port_world.z, ti.i32)]
-        h_starboard = water_h[ti.cast(p_starboard_world.x, ti.i32), ti.cast(p_starboard_world.z, ti.i32)]
-        roll_angle = (h_port - h_starboard) * 0.03
+
+        # b. 获取左右两舷的水面高度 (乘以视觉缩放系数！)
+        h_port = water_h[ti.cast(p_port_world.x, ti.i32), ti.cast(p_port_world.z, ti.i32)] * self.visual_height_scale
+        h_starboard = water_h[ti.cast(p_starboard_world.x, ti.i32), ti.cast(p_starboard_world.z, ti.i32)] * self.visual_height_scale
+        
+        # c. 根据高度差计算侧倾角
+        roll_angle = (h_port - h_starboard) * 0.03 # 0.03是倾斜灵敏度，可以调整
+
+        # --- 3. 合成最终的旋转矩阵并更新顶点 ---
         tilt_rotation = ti.Vector([pitch_angle, 0.0, roll_angle])
         tilt_rot_matrix = create_rotation_matrix(tilt_rotation)
-        final_rot_matrix = base_rot_matrix @ tilt_rot_matrix
+        final_rot_matrix = base_rot_matrix @ tilt_rot_matrix # 在基础旋转上叠加倾斜旋转
+        
         for i in self.local_vertices:
             rotated_vertex = final_rot_matrix @ self.local_vertices[i]
             rotated_normal = final_rot_matrix @ self.local_normals[i]
@@ -143,26 +166,36 @@ class Boat:
     @ti.kernel
     def step(self, dt: ti.f32, water_h: ti.template()):
         self.prev_position[None] = self.position[None]
+
+        # 1. 初始化总浮力
+        total_buoyancy_force = 0.0
+        rot_matrix = create_rotation_matrix(self.rotation[None])
         
-        # 如果正在下沉，则不计算浮力
-        if self.is_sinking[None] == 0:
-            avg_displacement = 0.0
-            rot_matrix = create_rotation_matrix(self.rotation[None])
-            for i in ti.static(range(4)):
-                world_p = self.position[None] + rot_matrix @ self.buoyancy_points[i]
-                grid_x, grid_z = ti.cast(world_p.x, ti.i32), ti.cast(world_p.z, ti.i32)
-                if 0 <= grid_x < self.bounds[0] and 0 <= grid_z < self.bounds[1]:
-                    water_level = water_h[grid_x, grid_z]
-                    avg_displacement += (water_level - world_p.y)
+        # 2. 遍历4个浮力点，计算每个点受到的浮力并累加
+        for i in ti.static(range(4)):
+            # a. 计算该浮力点的世界坐标
+            world_p = self.position[None] + rot_matrix @ self.buoyancy_points[i]
             
-            avg_displacement /= 4.0
-            target_y = self.position[None].y + avg_displacement + self.float_height
-            final_displacement = target_y - self.position[None].y
-            # 使用这个正确的、经过验证的浮力公式
-            self.velocity[None].y += final_displacement * self.buoyancy_spring * dt
+            # b. 获取该点下方的水面高度 (物理高度 * 视觉缩放)
+            grid_x = ti.max(0, ti.min(self.bounds[0] - 1, ti.cast(world_p.x, ti.i32)))
+            grid_z = ti.max(0, ti.min(self.bounds[1] - 1, ti.cast(world_p.z, ti.i32)))
+            water_level = water_h[grid_x, grid_z] * self.visual_height_scale
+
+            # c. 计算该点的淹没深度 (从期望的浮动高度算起)
+            displacement = (water_level + self.float_height) - world_p.y
+            
+            # d. 根据淹没深度计算该点产生的浮力，并累加到总浮力上
+            #    除以4是为了对所有点的力进行平均
+            total_buoyancy_force += displacement * self.buoyancy_spring / 4.0
+
+        # 3. 将总浮力施加到船的垂直速度上
+        self.velocity[None].y += total_buoyancy_force * dt
         
+        # 4. 施加阻尼并更新位置
         self.velocity[None].y *= self.buoyancy_damping
         self.position[None] += self.velocity[None] * dt
+
+        # 5. 水平方向的速度衰减和边界检测 (保持不变)
         self.velocity[None].x *= self.drag
         self.velocity[None].z *= self.drag
         

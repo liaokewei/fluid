@@ -8,6 +8,11 @@ import numpy as np
 class SimulationGUI:
     def __init__(self, water_sim, boat, obstacle_manager, rain_sim, smoke_system, resolution, title):
         # 1. 保存所有模拟模块的实例
+        self.bg_image_path = '../model/OIP.jpg'  # 替换为你的背景图片路径
+        self.bg_image = Image.open(self.bg_image_path).convert('RGB')
+        self.bg_image = self.bg_image.resize(resolution)  # 调整大小以匹配窗口尺寸
+        self.bg_image_np = np.array(self.bg_image)
+
         self.water_sim = water_sim
         self.boat = boat
         self.obstacle_manager = obstacle_manager
@@ -20,6 +25,7 @@ class SimulationGUI:
         self.game_over = False
         self.is_raining = False
         self.is_windy = False
+        self.obstacles_enabled = False
 
         # 3. 在GUI内部创建渲染器实例
         self.renderer = WaterRenderer(
@@ -78,9 +84,20 @@ class SimulationGUI:
                 self.boat.control(move_dir, self.dt)
                 
                 self.boat.step(self.dt, self.water_sim.h)
+
+                if self.obstacles_enabled:
+                    self.obstacle_manager.try_spawn(self.dt)
+                    self.obstacle_manager.update_obstacles(self.dt)
+                    self.obstacle_manager.check_collisions(self.boat.position[None], self.boat.bounding_radius)
+                    
+                    if self.obstacle_manager.collision_flag[None] == 1:
+                        print("Game Over!")
+                        self.game_over = True
+                        self.boat.is_sinking[None] = 1
+                        self.obstacle_manager.collision_flag[None] = 0
                 
-                self.obstacle_manager.try_spawn(self.dt)
-                self.obstacle_manager.update_obstacles(self.dt)
+                # self.obstacle_manager.try_spawn(self.dt)
+                # self.obstacle_manager.update_obstacles(self.dt)
                 
                 self.water_sim.create_wakes_kernel(self.boat.position[None], self.boat.prev_position[None], self.obstacle_manager.obstacles)
 
@@ -116,7 +133,8 @@ class SimulationGUI:
                 self.canvas.set_image(self.bg_image_np)
             else: 
                 self.canvas.set_background_color((0.0, 0.0, 0.0))
-
+                
+            self.canvas.set_image(self.bg_image_np)
             scene.set_camera(self.camera)
             scene.ambient_light((0.3, 0.3, 0.4))
             light_pos = self.camera.curr_position + ti.Vector([0, 20, 0])
@@ -124,7 +142,7 @@ class SimulationGUI:
             
             # --- 核心修正：使用正确的 UI 语法 ---
             gui = self.window.get_gui()
-            gui.begin("Controls", 0.05, 0.05, 0.2, 0.25)
+            gui.begin("Controls", 0.05, 0.05, 0.2, 0.35) # 稍微把UI窗口调高一点以容纳新控件
             gui.text("Weather Controls")
             if gui.button("Toggle Rain"):
                 self.is_raining = not self.is_raining
@@ -132,6 +150,17 @@ class SimulationGUI:
             if gui.button("Toggle Wind"):
                 self.is_windy = not self.is_windy
             gui.text(f"  Windy: {self.is_windy}")
+            
+            # --- 新增：障碍物开关UI ---
+            gui.text("Game Controls")
+            if gui.button("Toggle Obstacles"):
+                self.obstacles_enabled = not self.obstacles_enabled
+                # 如果是关闭障碍物，立即清空场上所有障碍物
+                if not self.obstacles_enabled:
+                    self.obstacle_manager.init_obstacles()
+            gui.text(f"  Obstacles: {self.obstacles_enabled}")
+            # ---------------------------
+
             gui.end()
             # ------------------------------------
             
