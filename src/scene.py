@@ -22,7 +22,7 @@ class Boat:
         self.move_acc = 800.0
         self.drag = 0.95
         self.bounds = water_bounds
-        self.float_height = 10.0
+        self.float_height = 0.0
         self.buoyancy_spring = 250.0
         self.buoyancy_damping = 0.95
         self.bounding_radius = 25.0
