@@ -4,10 +4,19 @@ import random
 from scene import Boat, ObstacleManager
 from particle_system import ParticleSystem 
 
+from PIL import Image
+import numpy as np
+
 @ti.data_oriented
 class SimulationGUI:
     # ... (__init__ 和其他函数不变) ...
     def __init__(self, water_sim, boat, obstacle_manager, rain_sim, resolution, title):
+
+        self.bg_image_path = '../model/OIP.jpg'  # 替换为你的背景图片路径
+        self.bg_image = Image.open(self.bg_image_path).convert('RGB')
+        self.bg_image = self.bg_image.resize(resolution)  # 调整大小以匹配窗口尺寸
+        self.bg_image_np = np.array(self.bg_image)
+
         self.water_sim = water_sim
         self.boat = boat
         self.obstacle_manager = obstacle_manager
@@ -80,12 +89,19 @@ class SimulationGUI:
             self.water_vertex_colors[idx] = final_color
 
     def render(self, scene):
+        self.canvas.set_image(self.bg_image_np)
         scene.set_camera(self.camera)
         scene.point_light(pos=(self.water_sim.size_x, self.water_sim.size_z, self.water_sim.size_x), color=(1, 1, 1))
         scene.ambient_light((0.5, 0.5, 0.5))
         scene.mesh(self.water_vertices, indices=self.water_indices, per_vertex_color=self.water_vertex_colors, two_sided=True)
         if not self.game_over or self.boat.is_sinking[None] == 1:
-            scene.mesh(vertices=self.boat.world_vertices, indices=self.boat.indices, normals=self.boat.world_normals, color=self.boat_color)
+            # scene.mesh(vertices=self.boat.world_vertices, indices=self.boat.indices, normals=self.boat.world_normals, color=self.boat_color)
+            scene.mesh(
+                vertices=self.boat.world_vertices,
+                indices=self.boat.indices,
+                per_vertex_color=self.boat.vertex_color,
+                # 其他参数比如 shading="flat" 等等
+            )
             scene.particles(self.obstacle_manager.obstacles.position, radius=6.0, color=self.obstacle_color)
         
         # --- 核心修正：减小粒子半径 ---

@@ -5,6 +5,8 @@ import os
 import math
 import random
 
+from PIL import Image
+
 @ti.data_oriented
 class Boat:
     def __init__(self, obj_path: str, initial_pos, initial_rotation, water_bounds):
@@ -72,6 +74,25 @@ class Boat:
         self.indices.from_numpy(indices_np)
         self.local_normals.from_numpy(normals_np)
         self.uvs.from_numpy(uvs_np)
+
+        texture_image = Image.open("../model/PIC_01.png").convert("RGB")
+        texture_data = np.array(texture_image, dtype=np.float32) / 255.0
+        tex_h, tex_w = texture_data.shape[:2]
+
+        # === 2. 提取 UV 并采样颜色 ===
+        uvs_np = self.uvs.to_numpy()  # shape: (num_vertices, 2)
+        vertex_color_np = np.zeros((uvs_np.shape[0], 3), dtype=np.float32)
+
+        for i, (u, v) in enumerate(uvs_np):
+            u = np.clip(u, 0, 1)
+            v = np.clip(v, 0, 1)
+            x = int(u * (tex_w - 1))
+            y = int((1 - v) * (tex_h - 1))  # 注意：图片原点在左上，V轴需翻转
+            vertex_color_np[i] = texture_data[y, x, :3]  # RGB
+
+        # === 3. 存储到 Taichi field ===
+        self.vertex_color = ti.Vector.field(3, dtype=ti.f32, shape=uvs_np.shape[0])
+        self.vertex_color.from_numpy(vertex_color_np)
 
     @ti.kernel
     def update_world_space_data(self):
