@@ -1,8 +1,8 @@
 import taichi as ti
 from gui import SimulationGUI
 from liquid_simulator import WaterSurfaceSimulator
-from scene import ObstacleManager
-from scene import Boat
+from scene import Boat, ObstacleManager
+from rain import RainSimulator
 import os
 
 if __name__ == "__main__":
@@ -12,7 +12,8 @@ if __name__ == "__main__":
     water_res_z = 256
     
     water_sim = WaterSurfaceSimulator(water_res_x, water_res_z)
-    
+    rain_sim = RainSimulator(water_sim, probability=0.3, strength=-1.0, radius=2)
+
     relative_model_path = os.path.join(os.path.dirname(__file__), '..', 'model', 'model.obj')
     model_path = os.path.abspath(relative_model_path)
     
@@ -32,6 +33,7 @@ if __name__ == "__main__":
     gui = SimulationGUI(
         water_sim=water_sim,
         boat=boat,
+        rain_sim=rain_sim,
         obstacle_manager=obstacle_manager,
         resolution=(1024, 768),
         title="Taichi Water Simulation"

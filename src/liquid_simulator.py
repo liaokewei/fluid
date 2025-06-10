@@ -1,6 +1,6 @@
 import taichi as ti
 import math
-import random 
+import random
 import numpy as np
 
 @ti.data_oriented
@@ -9,11 +9,20 @@ class WaterSurfaceSimulator:
         self.size_x = size_x
         self.size_z = size_z
         self.dx = dx
+
         self.dt = 0.016
+        self.c = 20.0
+        self.damping = 0.996 # 阻尼可以设一个稍大的值，让波纹更持久
+
+        self.wind_direction = ti.Vector([-0.5, -0.8])
+        self.wind_strength = 0.8
+        self.wind_frequency = 0.05
+        self.wind_speed = 5.0
 
         self.h = ti.field(dtype=ti.f32, shape=(self.size_x, self.size_z))
+        self.v = ti.field(dtype=ti.f32, shape=(self.size_x, self.size_z))
+        
         self.elapsed_time = ti.field(dtype=ti.f32, shape=())
-
         self.perm = ti.field(ti.i32, shape=512)
         self.init_perlin_noise()
 
@@ -24,9 +33,11 @@ class WaterSurfaceSimulator:
 
     @ti.kernel
     def init_height_field(self):
-        self.h.fill(0)
+        self.h.fill(0.0)
+        self.v.fill(0.0)
         self.elapsed_time[None] = 0.0
 
+    # ... [fade, lerp, grad, perlin_noise, fbm 函数保持不变] ...
     @ti.func
     def fade(self, t):
         return t * t * t * (t * (t * 6 - 15) + 10)
@@ -67,7 +78,7 @@ class WaterSurfaceSimulator:
         g8 = self.grad(self.perm[BB + 1], x_frac - 1, y_frac - 1, z_frac - 1)
         return self.lerp(self.lerp(self.lerp(g1, g2, u), self.lerp(g3, g4, u), v),
                          self.lerp(self.lerp(g5, g6, u), self.lerp(g7, g8, u), v), w)
-    
+
     @ti.func
     def fbm(self, p, persistence):
         total, frequency, amplitude, max_value = 0.0, 1.0, 1.0, 0.0
@@ -77,30 +88,85 @@ class WaterSurfaceSimulator:
             amplitude *= persistence
             frequency *= 2.0
         return total / max_value
-
+    
+    # --- 为内部点注入背景流动能量 ---
     @ti.kernel
     def update_procedural_waves(self, time: ti.f32):
-        base_amplitude = 2.5
+        base_amplitude = 1.0
         base_frequency = 0.02
         persistence = 0.5
-        time_scale = 0.3
-        flow_speed = 0.8
-        for i, j in self.h:
-            p = ti.Vector([i * base_frequency, 
-                           j * base_frequency - time * flow_speed, 
+        time_scale = 0.1
+        flow_speed = 0.3
+        for i, j in ti.ndrange((1, self.size_x - 1), (1, self.size_z - 1)):
+            p = ti.Vector([i * base_frequency,
+                           j * base_frequency - time * flow_speed,
                            time * time_scale])
             noise_val = self.fbm(p, persistence)
-            self.h[i, j] = noise_val * base_amplitude
+            self.v[i, j] += noise_val * base_amplitude * self.dt
 
+    # --- 能量在内部点传播 ---
+    @ti.kernel
+    def wave_propagate(self):
+        for i, j in ti.ndrange((1, self.size_x - 1), (1, self.size_z - 1)):
+            h_laplacian = (self.h[i - 1, j] + self.h[i + 1, j] +
+                           self.h[i, j - 1] + self.h[i, j + 1] -
+                           4 * self.h[i, j])
+            self.v[i, j] += self.dt * (self.c**2 * h_laplacian / self.dx**2)
+
+        for i, j in ti.ndrange((1, self.size_x - 1), (1, self.size_z - 1)):
+            self.h[i, j] += self.dt * self.v[i, j]
+            
+    # --- 新增：进行阻尼并强制处理边界 ---
+    @ti.kernel
+    def apply_damping_and_boundary(self):
+        # 内部点施加阻尼
+        for i, j in ti.ndrange((1, self.size_x - 1), (1, self.size_z - 1)):
+            self.v[i, j] *= self.damping
+
+        # 边界点强制清零
+        for i in range(self.size_x):
+            self.h[i, 0] = 0.0
+            self.v[i, 0] = 0.0
+            self.h[i, self.size_z - 1] = 0.0
+            self.v[i, self.size_z - 1] = 0.0
+        for j in range(self.size_z):
+            self.h[0, j] = 0.0
+            self.v[0, j] = 0.0
+            self.h[self.size_x - 1, j] = 0.0
+            self.v[self.size_x - 1, j] = 0.0
+
+    # --- step函数采用新结构 ---
     def step(self):
-        self.elapsed_time[None] += self.dt
         self.update_procedural_waves(self.elapsed_time[None])
-        
+        self.wave_propagate()
+        self.apply_damping_and_boundary()
+        self.elapsed_time[None] += self.dt
+
     @ti.kernel
     def disturb_at(self, x: ti.i32, z: ti.i32, radius: ti.i32, strength: ti.f32):
         for i, j in ti.ndrange((-radius, radius), (-radius, radius)):
-            if 0 <= x + i < self.size_x and 0 <= z + j < self.size_z:
-                if i**2 + j**2 < radius**2:
-                    dist_sq = i*i + j*j
-                    falloff = 1.0 - dist_sq / (radius*radius)
-                    ti.atomic_add(self.h[x + i, z + j], strength * falloff)
+            px, pz = x + i, z + j
+            if 1 <= px < self.size_x - 1 and 1 <= pz < self.size_z - 1:
+                dist_sq = i*i + j*j
+                if dist_sq < radius**2:
+                    # 为了让涟漪更明显，可以稍微增强这里的力量
+                    falloff = ti.cos(0.5 * math.pi * ti.sqrt(dist_sq) / radius)
+                    self.v[px, pz] += strength * falloff * 2.0
+
+    @ti.kernel
+    def apply_wind(self):
+        # --- 修改：不再使用局部变量，而是使用 self. 属性 ---
+        # wind_direction = ti.Vector([-0.5, -0.8]) # 删除这部分
+        # wind_strength = 0.8
+        # wind_frequency = 0.05
+        # wind_speed = 5.0
+        # ---------------------------------------------
+
+        time = self.elapsed_time[None]
+        wind_dir_norm = self.wind_direction.normalized()
+
+        for i, j in ti.ndrange((1, self.size_x - 1), (1, self.size_z - 1)):
+            pos_proj = i * wind_dir_norm.x + j * wind_dir_norm.y
+            force = ti.sin(pos_proj * self.wind_frequency + time * self.wind_speed) * self.wind_strength
+
+            self.v[i, j] += force * self.dt
