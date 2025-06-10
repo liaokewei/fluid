@@ -97,7 +97,7 @@ class WaterRenderer:
             final_color = base_color + specular_color
             self.water_vertex_colors[idx] = final_color
 
-    def render(self, scene, game_over: bool, camera_pos: ti.math.vec3, light_pos: ti.math.vec3):
+    def render(self, scene, game_over: bool, camera_pos: ti.math.vec3, light_pos: ti.math.vec3, sinking_flag: int = 0):
         # 1. 更新水面数据
         self.update_water_mesh_and_color(camera_pos, light_pos)
 
@@ -109,7 +109,7 @@ class WaterRenderer:
                two_sided=True)
 
         # 3. 渲染其他物体
-        if not game_over:
+        if not game_over or sinking_flag == 1:
             # 使用 world_vertices 来渲染移动和旋转后的船
             scene.mesh(vertices=self.boat.world_vertices, 
                        indices=self.boat.indices, 

@@ -5,6 +5,8 @@ import os
 import math
 import random
 
+from PIL import Image
+
 @ti.data_oriented
 class Boat:
     def __init__(self, obj_path: str, initial_pos, initial_rotation, water_bounds):
@@ -22,27 +24,40 @@ class Boat:
         self.move_acc = 800.0
         self.drag = 0.95
         self.bounds = water_bounds
-        self.float_height = 12.0     # 船的吃水深度
-        self.buoyancy_spring = 600.0 # 浮力强度
+        self.float_height = 10.0
+        self.buoyancy_spring = 600.0 # 使用一个经过验证的稳定值
         self.buoyancy_damping = 0.95
         self.bounding_radius = 12.0
         self.wind_influence_factor = 40.0
         
+        # --- 浮力点定义 ---
         self.buoyancy_points = ti.Vector.field(3, dtype=ti.f32, shape=4)
         buoyancy_points_np = np.array([
             [0, 0, -15], [0, 0, 15], [-8, 0, 0], [8, 0, 0]
         ], dtype=np.float32)
         self.buoyancy_points.from_numpy(buoyancy_points_np)
         
+        # --- 修正：将新增的“沉没”属性定义在 __init__ 中 ---
+        self.is_sinking = ti.field(dtype=ti.i32, shape=())
+        self.sink_velocity = ti.field(dtype=ti.f32, shape=())
+        self.max_sink_depth = ti.field(dtype=ti.f32, shape=())
+        self.is_sinking[None] = 0
+        self.sink_velocity[None] = 0.0
+        self.max_sink_depth[None] = 8.0
+        # -----------------------------------------------
+
         self.local_vertices = None
         self.world_vertices = None
         self.local_normals = None
         self.world_normals = None
         self.uvs = None
         self.indices = None
+        self.vertex_color = None
+        
         self.load_model_from_obj(obj_path)
-        self.initial_world_space_data()
+        self.initial_world_space_data() # 现在可以安全调用
 
+    # --- 核心修正：将此函数变为 @ti.kernel ---
     @ti.kernel
     def initial_world_space_data(self):
         rot_matrix = create_rotation_matrix(self.rotation[None])
@@ -51,6 +66,7 @@ class Boat:
             self.world_vertices[i] = self.position[None] + rotated_vertex
             rotated_normal = rot_matrix @ self.local_normals[i]
             self.world_normals[i] = rotated_normal.normalized()
+    # ---------------------------------------
 
     def load_model_from_obj(self, filepath):
         mesh = trimesh.load_mesh(filepath, process=True)
@@ -82,6 +98,25 @@ class Boat:
         self.local_normals.from_numpy(normals_np)
         self.uvs.from_numpy(uvs_np)
 
+        # 贴图相关逻辑保持不变
+        try:
+            texture_image = Image.open("../model/PIC_01.png").convert("RGB")
+            texture_data = np.array(texture_image, dtype=np.float32) / 255.0
+            tex_h, tex_w = texture_data.shape[:2]
+            vertex_color_np = np.zeros((uvs_np.shape[0], 3), dtype=np.float32)
+            for i, (u, v) in enumerate(uvs_np):
+                u_ = np.clip(u, 0, 1)
+                v_ = np.clip(v, 0, 1)
+                x = int(u_ * (tex_w - 1))
+                y = int((1 - v_) * (tex_h - 1))
+                vertex_color_np[i] = texture_data[y, x, :3]
+            self.vertex_color = ti.Vector.field(3, dtype=ti.f32, shape=uvs_np.shape[0])
+            self.vertex_color.from_numpy(vertex_color_np)
+        except FileNotFoundError:
+            print("Warning: Texture file not found. Using default colors.")
+            self.vertex_color = None
+
+
     @ti.kernel
     def update_world_space_data(self, water_h: ti.template()):
         base_rot_matrix = create_rotation_matrix(self.rotation[None])
@@ -104,23 +139,27 @@ class Boat:
             self.world_vertices[i] = self.position[None] + rotated_vertex
             self.world_normals[i] = rotated_normal.normalized()
 
+    # --- 核心修正：使用经过验证的、正确的浮力计算公式 ---
     @ti.kernel
     def step(self, dt: ti.f32, water_h: ti.template()):
         self.prev_position[None] = self.position[None]
-        avg_force_y = 0.0
-        rot_matrix = create_rotation_matrix(self.rotation[None])
-        for i in ti.static(range(4)):
-            world_p = self.position[None] + rot_matrix @ self.buoyancy_points[i]
-            grid_x, grid_z = ti.cast(world_p.x, ti.i32), ti.cast(world_p.z, ti.i32)
-            if 0 <= grid_x < self.bounds[0] and 0 <= grid_z < self.bounds[1]:
-                water_level = water_h[grid_x, grid_z]
-                displacement = water_level - world_p.y
-                # 直接累加每个点的浮力，而不是位移
-                avg_force_y += displacement
         
-        # 施加总浮力
-        self.velocity[None].y += self.float_height * self.buoyancy_spring * dt 
-        self.velocity[None].y += avg_force_y * self.buoyancy_spring * dt / 4.0
+        # 如果正在下沉，则不计算浮力
+        if self.is_sinking[None] == 0:
+            avg_displacement = 0.0
+            rot_matrix = create_rotation_matrix(self.rotation[None])
+            for i in ti.static(range(4)):
+                world_p = self.position[None] + rot_matrix @ self.buoyancy_points[i]
+                grid_x, grid_z = ti.cast(world_p.x, ti.i32), ti.cast(world_p.z, ti.i32)
+                if 0 <= grid_x < self.bounds[0] and 0 <= grid_z < self.bounds[1]:
+                    water_level = water_h[grid_x, grid_z]
+                    avg_displacement += (water_level - world_p.y)
+            
+            avg_displacement /= 4.0
+            target_y = self.position[None].y + avg_displacement + self.float_height
+            final_displacement = target_y - self.position[None].y
+            # 使用这个正确的、经过验证的浮力公式
+            self.velocity[None].y += final_displacement * self.buoyancy_spring * dt
         
         self.velocity[None].y *= self.buoyancy_damping
         self.position[None] += self.velocity[None] * dt
@@ -137,6 +176,23 @@ class Boat:
     def control(self, move_dir: ti.types.vector(2, ti.f32), dt: ti.f32):
         self.velocity[None].x += move_dir.x * self.move_acc * dt
         self.velocity[None].z += move_dir.y * self.move_acc * dt
+
+    @ti.kernel
+    def sink(self, dt: ti.f32, water_h: ti.template()):
+        if self.is_sinking[None] == 1:
+            pos = self.position[None]
+            grid_x, grid_z = ti.cast(pos.x, ti.i32), ti.cast(pos.z, ti.i32)
+            if 0 <= grid_x < self.bounds[0] and 0 <= grid_z < self.bounds[1]:
+                water_level = water_h[grid_x, grid_z]
+                max_sink_y = water_level - self.max_sink_depth[None]
+
+                if pos.y > max_sink_y:
+                    self.sink_velocity[None] += 0.8 * dt
+                    self.position[None].y -= self.sink_velocity[None] * dt
+                else:
+                    self.sink_velocity[None] = 0.0
+                    self.position[None].y = max_sink_y
+                    self.is_sinking[None] = 0
 
 @ti.func
 def create_rotation_matrix(rotation: ti.template()):
