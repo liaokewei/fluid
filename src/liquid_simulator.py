@@ -92,7 +92,7 @@ class WaterSurfaceSimulator:
     # --- 为内部点注入背景流动能量 ---
     @ti.kernel
     def update_procedural_waves(self, time: ti.f32):
-        base_amplitude = 1.0
+        base_amplitude = 1.5
         base_frequency = 0.02
         persistence = 0.5
         time_scale = 0.1
@@ -142,16 +142,51 @@ class WaterSurfaceSimulator:
         self.apply_damping_and_boundary()
         self.elapsed_time[None] += self.dt
 
-    @ti.kernel
-    def disturb_at(self, x: ti.i32, z: ti.i32, radius: ti.i32, strength: ti.f32):
+    @ti.func
+    def _apply_disturbance_at(self, x: ti.i32, z: ti.i32, radius: ti.i32, strength: ti.f32):
+        # 这是一个内部函数，可以被kernel调用
         for i, j in ti.ndrange((-radius, radius), (-radius, radius)):
             px, pz = x + i, z + j
             if 1 <= px < self.size_x - 1 and 1 <= pz < self.size_z - 1:
-                dist_sq = i*i + j*j
+                dist_sq = i * i + j * j
                 if dist_sq < radius**2:
-                    # 为了让涟漪更明显，可以稍微增强这里的力量
                     falloff = ti.cos(0.5 * math.pi * ti.sqrt(dist_sq) / radius)
-                    self.v[px, pz] += strength * falloff * 2.0
+                    self.v[px, pz] += strength * falloff
+
+    @ti.kernel
+    def disturb_at(self, x: ti.i32, z: ti.i32, radius: ti.i32, strength: ti.f32):
+        self._apply_disturbance_at(x, z, radius, strength)
+
+    @ti.kernel
+    def create_wakes_kernel(self, 
+                            boat_pos: ti.math.vec3, 
+                            boat_prev_pos: ti.math.vec3,
+                            obstacles: ti.template()):
+        # 1. 为小船创建更真实的V形尾迹 (逻辑不变)
+        direction = (boat_pos - boat_prev_pos).normalized()
+        side_vec = ti.Vector([-direction.z, 0.0, direction.x])
+
+        for i in range(5):
+            t = i / 4.0
+            pos = boat_prev_pos * t + boat_pos * (1.0 - t)
+            
+            # a. 在中心产生一个较窄的凹陷
+            bx_c, bz_c = ti.cast(pos.x, ti.i32), ti.cast(pos.z, ti.i32)
+            self._apply_disturbance_at(bx_c, bz_c, 2, -0.05)
+
+            # b. 在两侧产生更宽、更弱的凸起
+            for side in ti.static([-1.0, 1.0]):
+                side_pos = pos + side_vec * 5.0 * side
+                bx_s, bz_s = ti.cast(side_pos.x, ti.i32), ti.cast(side_pos.z, ti.i32)
+                self._apply_disturbance_at(bx_s, bz_s, 3, 0.03)
+        
+        # 2. 新增：在此内核中为所有障碍物创建尾迹
+        for i in obstacles:
+            if obstacles[i].active == 1:
+                obs_pos = obstacles[i].position
+                ox, oz = ti.cast(obs_pos.x, ti.i32), ti.cast(obs_pos.z, ti.i32)
+                self._apply_disturbance_at(ox, oz, 3, -0.05)
+
 
     @ti.kernel
     def apply_wind(self):

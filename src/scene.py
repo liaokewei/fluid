@@ -11,21 +11,29 @@ class Boat:
         self.position = ti.Vector.field(3, dtype=ti.f32, shape=())
         self.velocity = ti.Vector.field(3, dtype=ti.f32, shape=())
         self.rotation = ti.Vector.field(3, dtype=ti.f32, shape=())
+        self.prev_position = ti.Vector.field(3, dtype=ti.f32, shape=())
+        
         self.position.from_numpy(np.array(initial_pos, dtype=np.float32))
         self.velocity[None] = [0.0, 0.0, 0.0]
         rot_radians = [math.radians(angle) for angle in initial_rotation]
-        self.prev_position = ti.Vector.field(3, dtype=ti.f32, shape=())
-
-        self.wind_influence_factor = 40.0
-
         self.rotation.from_numpy(np.array(rot_radians, dtype=np.float32))
+
+        # --- 物理与视觉参数 ---
         self.move_acc = 800.0
         self.drag = 0.95
         self.bounds = water_bounds
-        self.float_height = 10.0
-        self.buoyancy_spring = 250.0
+        self.float_height = 12.0     # 船的吃水深度
+        self.buoyancy_spring = 600.0 # 浮力强度
         self.buoyancy_damping = 0.95
-        self.bounding_radius = 25.0
+        self.bounding_radius = 12.0
+        self.wind_influence_factor = 40.0
+        
+        self.buoyancy_points = ti.Vector.field(3, dtype=ti.f32, shape=4)
+        buoyancy_points_np = np.array([
+            [0, 0, -15], [0, 0, 15], [-8, 0, 0], [8, 0, 0]
+        ], dtype=np.float32)
+        self.buoyancy_points.from_numpy(buoyancy_points_np)
+        
         self.local_vertices = None
         self.world_vertices = None
         self.local_normals = None
@@ -33,7 +41,16 @@ class Boat:
         self.uvs = None
         self.indices = None
         self.load_model_from_obj(obj_path)
-        self.update_world_space_data()
+        self.initial_world_space_data()
+
+    @ti.kernel
+    def initial_world_space_data(self):
+        rot_matrix = create_rotation_matrix(self.rotation[None])
+        for i in self.local_vertices:
+            rotated_vertex = rot_matrix @ self.local_vertices[i]
+            self.world_vertices[i] = self.position[None] + rotated_vertex
+            rotated_normal = rot_matrix @ self.local_normals[i]
+            self.world_normals[i] = rotated_normal.normalized()
 
     def load_model_from_obj(self, filepath):
         mesh = trimesh.load_mesh(filepath, process=True)
@@ -66,27 +83,50 @@ class Boat:
         self.uvs.from_numpy(uvs_np)
 
     @ti.kernel
-    def update_world_space_data(self):
-        rot_matrix = create_rotation_matrix(self.rotation[None])
+    def update_world_space_data(self, water_h: ti.template()):
+        base_rot_matrix = create_rotation_matrix(self.rotation[None])
+        p_front_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[0]
+        p_stern_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[1]
+        h_front = water_h[ti.cast(p_front_world.x, ti.i32), ti.cast(p_front_world.z, ti.i32)]
+        h_stern = water_h[ti.cast(p_stern_world.x, ti.i32), ti.cast(p_stern_world.z, ti.i32)]
+        pitch_angle = (h_front - h_stern) * 0.03
+        p_port_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[2]
+        p_starboard_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[3]
+        h_port = water_h[ti.cast(p_port_world.x, ti.i32), ti.cast(p_port_world.z, ti.i32)]
+        h_starboard = water_h[ti.cast(p_starboard_world.x, ti.i32), ti.cast(p_starboard_world.z, ti.i32)]
+        roll_angle = (h_port - h_starboard) * 0.03
+        tilt_rotation = ti.Vector([pitch_angle, 0.0, roll_angle])
+        tilt_rot_matrix = create_rotation_matrix(tilt_rotation)
+        final_rot_matrix = base_rot_matrix @ tilt_rot_matrix
         for i in self.local_vertices:
-            rotated_vertex = rot_matrix @ self.local_vertices[i]
-            rotated_normal = rot_matrix @ self.local_normals[i]
+            rotated_vertex = final_rot_matrix @ self.local_vertices[i]
+            rotated_normal = final_rot_matrix @ self.local_normals[i]
             self.world_vertices[i] = self.position[None] + rotated_vertex
             self.world_normals[i] = rotated_normal.normalized()
 
     @ti.kernel
     def step(self, dt: ti.f32, water_h: ti.template()):
         self.prev_position[None] = self.position[None]
-        pos = self.position[None]
-        grid_x, grid_z = ti.cast(pos.x, ti.i32), ti.cast(pos.z, ti.i32)
-        if 0 <= grid_x < self.bounds[0] and 0 <= grid_z < self.bounds[1]:
-            target_y = water_h[grid_x, grid_z] + self.float_height
-            displacement = target_y - pos.y
-            self.velocity[None].y += displacement * self.buoyancy_spring * dt
+        avg_force_y = 0.0
+        rot_matrix = create_rotation_matrix(self.rotation[None])
+        for i in ti.static(range(4)):
+            world_p = self.position[None] + rot_matrix @ self.buoyancy_points[i]
+            grid_x, grid_z = ti.cast(world_p.x, ti.i32), ti.cast(world_p.z, ti.i32)
+            if 0 <= grid_x < self.bounds[0] and 0 <= grid_z < self.bounds[1]:
+                water_level = water_h[grid_x, grid_z]
+                displacement = water_level - world_p.y
+                # 直接累加每个点的浮力，而不是位移
+                avg_force_y += displacement
+        
+        # 施加总浮力
+        self.velocity[None].y += self.float_height * self.buoyancy_spring * dt 
+        self.velocity[None].y += avg_force_y * self.buoyancy_spring * dt / 4.0
+        
         self.velocity[None].y *= self.buoyancy_damping
         self.position[None] += self.velocity[None] * dt
         self.velocity[None].x *= self.drag
         self.velocity[None].z *= self.drag
+        
         half_size_x = self.bounds[0] * 0.05
         if self.position[None].x < half_size_x:
             self.position[None].x, self.velocity[None].x = half_size_x, 0.0
@@ -173,6 +213,7 @@ class ObstacleManager:
         for i in self.obstacles:
             if self.obstacles[i].active == 1:
                 dist_vec = self.obstacles[i].position - boat_pos
+                dist_vec.y = 0.0
                 dist_sq = dist_vec.dot(dist_vec)
                 sum_radii = self.obstacles[i].size + boat_radius
                 sum_radii_sq = sum_radii * sum_radii
