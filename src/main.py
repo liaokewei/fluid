@@ -3,8 +3,8 @@ from gui import SimulationGUI
 from liquid_simulator import WaterSurfaceSimulator
 from scene import Boat, ObstacleManager
 from rain import RainSimulator
-from particle_system import ParticleSystem # 确保导入 ParticleSystem
-from renderer import WaterRenderer # <--- 1. 导入 WaterRenderer
+from particle_system import ParticleSystem
+from renderer import WaterRenderer
 import os
 
 if __name__ == "__main__":
@@ -19,31 +19,22 @@ if __name__ == "__main__":
     relative_model_path = os.path.join(os.path.dirname(__file__), '..', 'model', 'model.obj')
     model_path = os.path.abspath(relative_model_path)
     boat_pos = [water_res_x * 0.5, 100.0, water_res_z * 0.9]
-    boat_rot_degrees = [270, 60, 90] # <--- 使用你原来的旋转角度
+    boat_rot_degrees = [270, 60, 90]
     boat = Boat(
         obj_path=model_path,
         initial_pos=boat_pos,
-        initial_rotation=boat_rot_degrees, # <--- 确保这里使用了正确的旋转变量
+        initial_rotation=boat_rot_degrees,
         water_bounds=(water_res_x, water_res_z)
     )
     obstacle_manager = ObstacleManager(max_obstacles=20, spawn_area=(water_res_x, water_res_z))
     smoke_system = ParticleSystem(max_particles=500)
-
-    # --- 2. 创建 WaterRenderer 实例 ---
-    renderer = WaterRenderer(
-        water_sim=water_sim,
-        boat=boat,
-        obstacle_manager=obstacle_manager,
-        smoke_system=smoke_system
-    )
-    # -----------------------------------
 
     gui = SimulationGUI(
         water_sim=water_sim,
         boat=boat,
         obstacle_manager=obstacle_manager,
         rain_sim=rain_sim,
-        smoke_system=smoke_system, # 把 smoke_system 也传进去
+        smoke_system=smoke_system,
         resolution=(1024, 768),
         title="Taichi Water Simulation"
     )

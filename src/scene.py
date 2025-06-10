@@ -128,33 +128,23 @@ class Boat:
         base_rot_matrix = create_rotation_matrix(self.rotation[None])
         
         # --- 1. 计算俯仰角 (Pitch) ---
-        # a. 获取船头和船尾浮力点的世界坐标
         p_front_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[0]
         p_stern_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[1]
-        
-        # b. 获取船头和船尾的水面高度 (乘以视觉缩放系数！)
         h_front = water_h[ti.cast(p_front_world.x, ti.i32), ti.cast(p_front_world.z, ti.i32)] * self.visual_height_scale
         h_stern = water_h[ti.cast(p_stern_world.x, ti.i32), ti.cast(p_stern_world.z, ti.i32)] * self.visual_height_scale
-        
-        # c. 根据高度差计算俯仰角
-        pitch_angle = (h_front - h_stern) * 0.03 # 0.03是倾斜灵敏度，可以调整
+        pitch_angle = (h_front - h_stern) * 0.03
 
         # --- 2. 计算侧倾角 (Roll) ---
-        # a. 获取左舷和右舷浮力点的世界坐标
         p_port_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[2]
         p_starboard_world = self.position[None] + base_rot_matrix @ self.buoyancy_points[3]
-
-        # b. 获取左右两舷的水面高度 (乘以视觉缩放系数！)
         h_port = water_h[ti.cast(p_port_world.x, ti.i32), ti.cast(p_port_world.z, ti.i32)] * self.visual_height_scale
         h_starboard = water_h[ti.cast(p_starboard_world.x, ti.i32), ti.cast(p_starboard_world.z, ti.i32)] * self.visual_height_scale
+        roll_angle = (h_port - h_starboard) * 0.03
         
-        # c. 根据高度差计算侧倾角
-        roll_angle = (h_port - h_starboard) * 0.03 # 0.03是倾斜灵敏度，可以调整
-
         # --- 3. 合成最终的旋转矩阵并更新顶点 ---
         tilt_rotation = ti.Vector([pitch_angle, 0.0, roll_angle])
         tilt_rot_matrix = create_rotation_matrix(tilt_rotation)
-        final_rot_matrix = base_rot_matrix @ tilt_rot_matrix # 在基础旋转上叠加倾斜旋转
+        final_rot_matrix = base_rot_matrix @ tilt_rot_matrix
         
         for i in self.local_vertices:
             rotated_vertex = final_rot_matrix @ self.local_vertices[i]
@@ -162,40 +152,25 @@ class Boat:
             self.world_vertices[i] = self.position[None] + rotated_vertex
             self.world_normals[i] = rotated_normal.normalized()
 
-    # --- 核心修正：使用经过验证的、正确的浮力计算公式 ---
     @ti.kernel
     def step(self, dt: ti.f32, water_h: ti.template()):
         self.prev_position[None] = self.position[None]
 
-        # 1. 初始化总浮力
         total_buoyancy_force = 0.0
         rot_matrix = create_rotation_matrix(self.rotation[None])
         
-        # 2. 遍历4个浮力点，计算每个点受到的浮力并累加
         for i in ti.static(range(4)):
-            # a. 计算该浮力点的世界坐标
             world_p = self.position[None] + rot_matrix @ self.buoyancy_points[i]
-            
-            # b. 获取该点下方的水面高度 (物理高度 * 视觉缩放)
             grid_x = ti.max(0, ti.min(self.bounds[0] - 1, ti.cast(world_p.x, ti.i32)))
             grid_z = ti.max(0, ti.min(self.bounds[1] - 1, ti.cast(world_p.z, ti.i32)))
             water_level = water_h[grid_x, grid_z] * self.visual_height_scale
-
-            # c. 计算该点的淹没深度 (从期望的浮动高度算起)
             displacement = (water_level + self.float_height) - world_p.y
-            
-            # d. 根据淹没深度计算该点产生的浮力，并累加到总浮力上
-            #    除以4是为了对所有点的力进行平均
             total_buoyancy_force += displacement * self.buoyancy_spring / 4.0
 
-        # 3. 将总浮力施加到船的垂直速度上
         self.velocity[None].y += total_buoyancy_force * dt
-        
-        # 4. 施加阻尼并更新位置
         self.velocity[None].y *= self.buoyancy_damping
         self.position[None] += self.velocity[None] * dt
 
-        # 5. 水平方向的速度衰减和边界检测 (保持不变)
         self.velocity[None].x *= self.drag
         self.velocity[None].z *= self.drag
         
@@ -293,7 +268,11 @@ class ObstacleManager:
                 pos_x = (lane_idx + ti.random() * 0.6 - 0.3) * lane_width
                 self.obstacles[obstacle_idx].position = ti.Vector([pos_x, 10.0, ti.random() * -30.0])
                 self.obstacles[obstacle_idx].velocity = ti.Vector([0.0, 0.0, 45.0])
-                self.obstacles[obstacle_idx].size = ti.random() * 2.0 + 5.0
+                
+
+                self.obstacles[obstacle_idx].size = ti.random() * 4.0 + 10.0
+                # -----------------------------
+
                 spawn_count += 1
             obstacle_idx += 1
             

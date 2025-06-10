@@ -12,7 +12,7 @@ class WaterSurfaceSimulator:
 
         self.dt = 0.016
         self.c = 20.0
-        self.damping = 0.996 # 阻尼可以设一个稍大的值，让波纹更持久
+        self.damping = 0.996
 
         self.wind_direction = ti.Vector([-0.5, -0.8])
         self.wind_strength = 0.8
@@ -37,7 +37,6 @@ class WaterSurfaceSimulator:
         self.v.fill(0.0)
         self.elapsed_time[None] = 0.0
 
-    # ... [fade, lerp, grad, perlin_noise, fbm 函数保持不变] ...
     @ti.func
     def fade(self, t):
         return t * t * t * (t * (t * 6 - 15) + 10)
@@ -89,7 +88,6 @@ class WaterSurfaceSimulator:
             frequency *= 2.0
         return total / max_value
     
-    # --- 为内部点注入背景流动能量 ---
     @ti.kernel
     def update_procedural_waves(self, time: ti.f32):
         base_amplitude = 1.5
@@ -104,7 +102,6 @@ class WaterSurfaceSimulator:
             noise_val = self.fbm(p, persistence)
             self.v[i, j] += noise_val * base_amplitude * self.dt
 
-    # --- 能量在内部点传播 ---
     @ti.kernel
     def wave_propagate(self):
         for i, j in ti.ndrange((1, self.size_x - 1), (1, self.size_z - 1)):
@@ -116,14 +113,10 @@ class WaterSurfaceSimulator:
         for i, j in ti.ndrange((1, self.size_x - 1), (1, self.size_z - 1)):
             self.h[i, j] += self.dt * self.v[i, j]
             
-    # --- 新增：进行阻尼并强制处理边界 ---
     @ti.kernel
     def apply_damping_and_boundary(self):
-        # 内部点施加阻尼
         for i, j in ti.ndrange((1, self.size_x - 1), (1, self.size_z - 1)):
             self.v[i, j] *= self.damping
-
-        # 边界点强制清零
         for i in range(self.size_x):
             self.h[i, 0] = 0.0
             self.v[i, 0] = 0.0
@@ -135,7 +128,6 @@ class WaterSurfaceSimulator:
             self.h[self.size_x - 1, j] = 0.0
             self.v[self.size_x - 1, j] = 0.0
 
-    # --- step函数采用新结构 ---
     def step(self):
         self.update_procedural_waves(self.elapsed_time[None])
         self.wave_propagate()
@@ -144,7 +136,6 @@ class WaterSurfaceSimulator:
 
     @ti.func
     def _apply_disturbance_at(self, x: ti.i32, z: ti.i32, radius: ti.i32, strength: ti.f32):
-        # 这是一个内部函数，可以被kernel调用
         for i, j in ti.ndrange((-radius, radius), (-radius, radius)):
             px, pz = x + i, z + j
             if 1 <= px < self.size_x - 1 and 1 <= pz < self.size_z - 1:
@@ -162,7 +153,6 @@ class WaterSurfaceSimulator:
                             boat_pos: ti.math.vec3, 
                             boat_prev_pos: ti.math.vec3,
                             obstacles: ti.template()):
-        # 1. 为小船创建更真实的V形尾迹 (逻辑不变)
         direction = (boat_pos - boat_prev_pos).normalized()
         side_vec = ti.Vector([-direction.z, 0.0, direction.x])
 
@@ -170,17 +160,14 @@ class WaterSurfaceSimulator:
             t = i / 4.0
             pos = boat_prev_pos * t + boat_pos * (1.0 - t)
             
-            # a. 在中心产生一个较窄的凹陷
             bx_c, bz_c = ti.cast(pos.x, ti.i32), ti.cast(pos.z, ti.i32)
             self._apply_disturbance_at(bx_c, bz_c, 2, -0.05)
 
-            # b. 在两侧产生更宽、更弱的凸起
             for side in ti.static([-1.0, 1.0]):
                 side_pos = pos + side_vec * 5.0 * side
                 bx_s, bz_s = ti.cast(side_pos.x, ti.i32), ti.cast(side_pos.z, ti.i32)
                 self._apply_disturbance_at(bx_s, bz_s, 3, 0.03)
         
-        # 2. 新增：在此内核中为所有障碍物创建尾迹
         for i in obstacles:
             if obstacles[i].active == 1:
                 obs_pos = obstacles[i].position
@@ -190,18 +177,10 @@ class WaterSurfaceSimulator:
 
     @ti.kernel
     def apply_wind(self):
-        # --- 修改：不再使用局部变量，而是使用 self. 属性 ---
-        # wind_direction = ti.Vector([-0.5, -0.8]) # 删除这部分
-        # wind_strength = 0.8
-        # wind_frequency = 0.05
-        # wind_speed = 5.0
-        # ---------------------------------------------
-
         time = self.elapsed_time[None]
         wind_dir_norm = self.wind_direction.normalized()
 
         for i, j in ti.ndrange((1, self.size_x - 1), (1, self.size_z - 1)):
             pos_proj = i * wind_dir_norm.x + j * wind_dir_norm.y
             force = ti.sin(pos_proj * self.wind_frequency + time * self.wind_speed) * self.wind_strength
-
             self.v[i, j] += force * self.dt

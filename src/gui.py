@@ -7,10 +7,9 @@ import numpy as np
 @ti.data_oriented
 class SimulationGUI:
     def __init__(self, water_sim, boat, obstacle_manager, rain_sim, smoke_system, resolution, title):
-        # 1. 保存所有模拟模块的实例
-        self.bg_image_path = '../model/OIP.jpg'  # 替换为你的背景图片路径
+        self.bg_image_path = '../model/OIP.jpg'
         self.bg_image = Image.open(self.bg_image_path).convert('RGB')
-        self.bg_image = self.bg_image.resize(resolution)  # 调整大小以匹配窗口尺寸
+        self.bg_image = self.bg_image.resize(resolution)
         self.bg_image_np = np.array(self.bg_image)
 
         self.water_sim = water_sim
@@ -19,7 +18,6 @@ class SimulationGUI:
         self.rain_sim = rain_sim
         self.smoke_system = smoke_system
         
-        # 2. 初始化模拟参数和状态
         self.resolution = resolution
         self.dt = 1 / 60.0
         self.game_over = False
@@ -27,7 +25,6 @@ class SimulationGUI:
         self.is_windy = False
         self.obstacles_enabled = False
 
-        # 3. 在GUI内部创建渲染器实例
         self.renderer = WaterRenderer(
             water_sim=self.water_sim,
             boat=self.boat,
@@ -35,7 +32,6 @@ class SimulationGUI:
             smoke_system=self.smoke_system
         )
         
-        # 4. 初始化窗口、相机和背景图
         self.window = ti.ui.Window(title, resolution, vsync=True)
         self.canvas = self.window.get_canvas()
         self.camera = ti.ui.Camera()
@@ -49,7 +45,6 @@ class SimulationGUI:
             print(f"Warning: Background image not found at '{bg_image_path}'. Will use a solid color background.")
             self.bg_image_np = None
 
-        # 5. 初始化各个模块
         self.water_sim.init_height_field()
         self.obstacle_manager.init_obstacles()
         self.smoke_system.init_particles()
@@ -66,15 +61,11 @@ class SimulationGUI:
     def run(self):
         scene = self.window.get_scene()
         while self.window.running:
-            # --- 1. 事件处理 ---
             for e in self.window.get_events(ti.ui.PRESS):
                 if e.key == 'k':
                     if self.boat.is_sinking[None] == 0:
                         self.boat.is_sinking[None] = 1
             
-                    
-
-            # --- 2. 游戏与物理逻辑 ---
             if not self.game_over:
                 move_dir = ti.Vector([0.0, 0.0])
                 if self.window.is_pressed('a'): move_dir.x = -1.0
@@ -96,19 +87,8 @@ class SimulationGUI:
                         self.boat.is_sinking[None] = 1
                         self.obstacle_manager.collision_flag[None] = 0
                 
-                # self.obstacle_manager.try_spawn(self.dt)
-                # self.obstacle_manager.update_obstacles(self.dt)
-                
                 self.water_sim.create_wakes_kernel(self.boat.position[None], self.boat.prev_position[None], self.obstacle_manager.obstacles)
 
-                self.obstacle_manager.check_collisions(self.boat.position[None], self.boat.bounding_radius)
-                if self.obstacle_manager.collision_flag[None] == 1:
-                    print("Game Over!")
-                    self.game_over = True
-                    self.boat.is_sinking[None] = 1
-                    self.obstacle_manager.collision_flag[None] = 0
-
-            # --- 3. 天气与特殊状态模拟 ---
             if self.is_raining:
                 self.rain_sim.step()
             
@@ -122,27 +102,23 @@ class SimulationGUI:
             if self.boat.is_sinking[None] == 1:
                 self.boat.sink(self.dt, self.water_sim.h)
 
-            # --- 4. 核心模拟器步进与数据更新 ---
             self.water_sim.step()
             self.smoke_system.update(self.dt)
             if not self.game_over or self.boat.is_sinking[None] == 1:
                 self.boat.update_world_space_data(self.water_sim.h)
 
-            # --- 5. 渲染 ---
             if self.bg_image_np is not None:
                 self.canvas.set_image(self.bg_image_np)
             else: 
                 self.canvas.set_background_color((0.0, 0.0, 0.0))
                 
-            self.canvas.set_image(self.bg_image_np)
             scene.set_camera(self.camera)
             scene.ambient_light((0.3, 0.3, 0.4))
             light_pos = self.camera.curr_position + ti.Vector([0, 20, 0])
             scene.point_light(pos=light_pos, color=(0.9, 0.9, 0.9))
             
-            # --- 核心修正：使用正确的 UI 语法 ---
             gui = self.window.get_gui()
-            gui.begin("Controls", 0.05, 0.05, 0.2, 0.35) # 稍微把UI窗口调高一点以容纳新控件
+            gui.begin("Controls", 0.05, 0.05, 0.2, 0.35)
             gui.text("Weather Controls")
             if gui.button("Toggle Rain"):
                 self.is_raining = not self.is_raining
@@ -151,21 +127,15 @@ class SimulationGUI:
                 self.is_windy = not self.is_windy
             gui.text(f"  Windy: {self.is_windy}")
             
-            # --- 新增：障碍物开关UI ---
             gui.text("Game Controls")
             if gui.button("Toggle Obstacles"):
                 self.obstacles_enabled = not self.obstacles_enabled
-                # 如果是关闭障碍物，立即清空场上所有障碍物
                 if not self.obstacles_enabled:
                     self.obstacle_manager.init_obstacles()
             gui.text(f"  Obstacles: {self.obstacles_enabled}")
-            # ---------------------------
-
             gui.end()
-            # ------------------------------------
             
             self.renderer.render(scene, self.game_over, self.camera.curr_position, light_pos, sinking_flag=self.boat.is_sinking[None])
 
-            # --- 6. 显示到窗口 ---
             self.canvas.scene(scene)
             self.window.show()
