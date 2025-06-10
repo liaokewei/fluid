@@ -74,7 +74,7 @@ class SimulationGUI:
         scene.point_light(pos=(self.water_sim.size_x, self.water_sim.size_z, self.water_sim.size_x), color=(1, 1, 1))
         scene.ambient_light((0.5, 0.5, 0.5))
         scene.mesh(self.water_vertices, indices=self.water_indices, per_vertex_color=self.water_vertex_colors, two_sided=True)
-        if not self.game_over:
+        if not self.game_over or self.boat.is_sinking[None] == 1:
             scene.mesh(vertices=self.boat.world_vertices, indices=self.boat.indices, normals=self.boat.world_normals, color=self.boat_color)
             scene.particles(self.obstacle_manager.obstacles.position, radius=10.0, color=self.obstacle_color)
         
@@ -101,11 +101,14 @@ class SimulationGUI:
                 if self.obstacle_manager.collision_flag[None] == 1:
                     print("Game Over!")
                     self.game_over = True
-                    self.smoke_system.spawn(self.boat.position[None])
+                    # self.smoke_system.spawn(self.boat.position[None])
+                    self.boat.is_sinking[None] = 1
                     self.obstacle_manager.collision_flag[None] = 0
             self.water_sim.step()
-            self.smoke_system.update(self.dt)
-            if not self.game_over:
+            # self.smoke_system.update(self.dt)
+            if self.boat.is_sinking[None] == 1:
+                self.boat.sink(self.dt, self.water_sim.h)
+            if not self.game_over or self.boat.is_sinking[None] == 1:
                 self.boat.update_world_space_data()
             self.update_water_vertices()
             self.update_water_colors()

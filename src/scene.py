@@ -18,7 +18,7 @@ class Boat:
         self.move_acc = 800.0
         self.drag = 0.95
         self.bounds = water_bounds
-        self.float_height = 40.0
+        self.float_height = 10.0
         self.buoyancy_spring = 250.0
         self.buoyancy_damping = 0.95
         self.bounding_radius = 25.0
@@ -30,6 +30,14 @@ class Boat:
         self.indices = None
         self.load_model_from_obj(obj_path)
         self.update_world_space_data()
+
+        # lc: 沉没属性
+        self.is_sinking = ti.field(dtype=ti.i32, shape=())  # 是否正在下沉
+        self.sink_velocity = ti.field(dtype=ti.f32, shape=())  # 当前下沉速度
+        self.max_sink_depth = ti.field(dtype=ti.f32, shape=())  # 最大沉没深度
+        self.is_sinking[None] = 0
+        self.sink_velocity[None] = 0.0
+        self.max_sink_depth[None] = 8.0  # 比如沉入水下 1.0 深度后停止
 
     def load_model_from_obj(self, filepath):
         mesh = trimesh.load_mesh(filepath, process=True)
@@ -92,6 +100,27 @@ class Boat:
     def control(self, move_dir: ti.types.vector(2, ti.f32), dt: ti.f32):
         self.velocity[None].x += move_dir.x * self.move_acc * dt
         self.velocity[None].z += move_dir.y * self.move_acc * dt
+
+    # lc: 模拟下沉
+    @ti.kernel
+    def sink(self, dt: ti.f32, water_h: ti.template()):
+        if self.is_sinking[None]:
+            pos = self.position[None]
+            grid_x, grid_z = ti.cast(pos.x, ti.i32), ti.cast(pos.z, ti.i32)
+            if 0 <= grid_x < self.bounds[0] and 0 <= grid_z < self.bounds[1]:
+                water_level = water_h[grid_x, grid_z]
+                max_sink_y = water_level - self.max_sink_depth[None]
+
+                if pos.y > max_sink_y:
+                    # 模拟加速度下沉
+                    self.sink_velocity[None] += 0.8 * dt  # 可以调节这个加速度因子
+                    self.position[None].y -= self.sink_velocity[None] * dt
+                else:
+                    # 到达最大沉没深度，停止下沉
+                    self.sink_velocity[None] = 0.0
+                    self.position[None].y = max_sink_y
+                    self.is_sinking[None] = 0
+
 
 @ti.func
 def create_rotation_matrix(rotation: ti.template()):

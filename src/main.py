@@ -1,7 +1,8 @@
 import taichi as ti
 from gui import SimulationGUI
 from liquid_simulator import WaterSurfaceSimulator
-from scene import Boat, ObstacleManager
+from scene import ObstacleManager
+from scene import Boat
 import os
 
 if __name__ == "__main__":
