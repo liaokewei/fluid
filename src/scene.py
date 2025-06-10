@@ -14,11 +14,15 @@ class Boat:
         self.position.from_numpy(np.array(initial_pos, dtype=np.float32))
         self.velocity[None] = [0.0, 0.0, 0.0]
         rot_radians = [math.radians(angle) for angle in initial_rotation]
+        self.prev_position = ti.Vector.field(3, dtype=ti.f32, shape=())
+
+        self.wind_influence_factor = 40.0
+
         self.rotation.from_numpy(np.array(rot_radians, dtype=np.float32))
         self.move_acc = 800.0
         self.drag = 0.95
         self.bounds = water_bounds
-        self.float_height = 40.0
+        self.float_height = 10.0
         self.buoyancy_spring = 250.0
         self.buoyancy_damping = 0.95
         self.bounding_radius = 25.0
@@ -72,6 +76,7 @@ class Boat:
 
     @ti.kernel
     def step(self, dt: ti.f32, water_h: ti.template()):
+        self.prev_position[None] = self.position[None]
         pos = self.position[None]
         grid_x, grid_z = ti.cast(pos.x, ti.i32), ti.cast(pos.z, ti.i32)
         if 0 <= grid_x < self.bounds[0] and 0 <= grid_z < self.bounds[1]:
@@ -159,7 +164,7 @@ class ObstacleManager:
                 pos_x = (lane_idx + ti.random() * 0.6 - 0.3) * lane_width
                 self.obstacles[obstacle_idx].position = ti.Vector([pos_x, 10.0, ti.random() * -30.0])
                 self.obstacles[obstacle_idx].velocity = ti.Vector([0.0, 0.0, 45.0])
-                self.obstacles[obstacle_idx].size = ti.random() * 4.0 + 8.0
+                self.obstacles[obstacle_idx].size = ti.random() * 2.0 + 5.0
                 spawn_count += 1
             obstacle_idx += 1
             
