@@ -40,7 +40,12 @@ class SimulationGUI:
             bg_image_path = '../model/OIP.jpg'
             bg_image = Image.open(bg_image_path).convert('RGB')
             bg_image = bg_image.resize(resolution)
-            self.bg_image_np = (np.array(bg_image, dtype=np.float32) / 255.0)
+            self.bg_image_np = np.array(bg_image, dtype=np.float32)
+            self.bg_image_np = np.rot90(self.bg_image_np, k=1)
+            self.bg_image_np = np.rot90(self.bg_image_np, k=1)
+            self.bg_image_np = np.rot90(self.bg_image_np, k=1)
+            self.bg_image_np = np.ascontiguousarray(self.bg_image_np, dtype=np.float32)
+            self.bg_image_np = self.bg_image_np / 255.0  # Normalize to [0, 1]
         except FileNotFoundError:
             print(f"Warning: Background image not found at '{bg_image_path}'. Will use a solid color background.")
             self.bg_image_np = None
