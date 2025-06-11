@@ -11,7 +11,7 @@ if __name__ == "__main__":
     ti.init(arch=ti.cuda, device_memory_fraction=0.8)
 
     water_res_x = 256
-    water_res_z = 256
+    water_res_z = 500
 
     water_sim = WaterSurfaceSimulator(water_res_x, water_res_z)
     rain_sim = RainSimulator(water_sim, probability=0.3, strength=-1.0, radius=2)
